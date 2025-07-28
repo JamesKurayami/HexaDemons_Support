@@ -9,10 +9,12 @@ RUN apt-get update && apt-get install -y \
 
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
-COPY . .
+# Create empty files first if they don't exist
+RUN touch users.json error.log && \
+    chmod 666 users.json && \
+    chmod 666 error.log
 
-RUN chmod 777 users.json
-RUN chmod 777 error.log
+COPY . .
 
 RUN composer install
 
