@@ -1,0 +1,12 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^(.*)$ index.php [QSA,L]
+</IfModule>
+
+<IfModule mod_php7.c>
+    php_value upload_max_filesize 10M
+    php_value post_max_size 10M
+    php_value memory_limit 256M
+</IfModule>
