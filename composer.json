@@ -1,0 +1,14 @@
+{
+    "name": "telegram-middleman-bot",
+    "require": {
+        "php": ">=8.1",
+        "ext-curl": "*",
+        "ext-json": "*",
+        "longman/telegram-bot": "^0.83.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        }
+    }
+}
