@@ -1,234 +1,285 @@
 <?php
-require_once __DIR__ . '/vendor/autoload.php';
+// Bot configuration
+define('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE');
+define('ADMIN_ID', 'YOUR_TELEGRAM_USER_ID');
+define('API_URL', 'https://api.telegram.org/bot' . BOT_TOKEN . '/');
+define('DATA_DIR', __DIR__ . '/data/');
+define('USERS_FILE', DATA_DIR . 'users.json');
+define('CONVERSATIONS_FILE', DATA_DIR . 'conversations.json');
+define('ERROR_LOG', DATA_DIR . 'error.log');
 
-use Longman\TelegramBot\Telegram;
-use Longman\TelegramBot\Request;
-use Longman\TelegramBot\Entities\Update;
-
-// Load configuration
-$bot_api_key  = getenv('TELEGRAM_BOT_TOKEN') ?: '8149005317:AAFTCtpaPKlUkpmcyhmIWQHVAbRxwn8dJWg';
-$bot_username = getenv('TELEGRAM_BOT_USERNAME') ?: '@HexaDemons_bot';
-$admin_id     = getenv('TELEGRAM_ADMIN_ID') ?: '1310095655';
-
-// Initialize data files if not exists
-if (!file_exists('users.json')) {
-    file_put_contents('users.json', json_encode([
-        'users' => [], 
-        'chats' => [],
-        'blocked' => [],
-        'maintenance' => false
-    ]));
-    chmod('users.json', 0666);
+// Ensure data directory exists
+if (!file_exists(DATA_DIR)) {
+    mkdir(DATA_DIR, 0755, true);
 }
 
-try {
-    // Create Telegram API object
-    $telegram = new Telegram($bot_api_key, $bot_username);
-    $telegram->handle();
-    $update = $telegram->getUpdate();
-    $message = $update->getMessage();
-    $chat_id = $message->getChat()->getId();
-    $text = $message->getText();
+// Initialize bot (clear webhook)
+function initializeBot() {
+    try {
+        file_get_contents(API_URL . 'setWebhook?url=');
+        return true;
+    } catch (Exception $e) {
+        logError("Initialization failed: " . $e->getMessage());
+        return false;
+    }
+}
 
-    // Load users data
-    $users_data = json_decode(file_get_contents('users.json'), true);
+// Error logging
+function logError($message) {
+    $timestamp = date('Y-m-d H:i:s');
+    file_put_contents(ERROR_LOG, "[$timestamp] $message\n", FILE_APPEND);
+}
 
+// Data management
+function loadData($file) {
+    try {
+        if (!file_exists($file)) {
+            file_put_contents($file, json_encode([]));
+        }
+        return json_decode(file_get_contents($file), true) ?: [];
+    } catch (Exception $e) {
+        logError("Load data failed ($file): " . $e->getMessage());
+        return [];
+    }
+}
+
+function saveData($file, $data) {
+    try {
+        file_put_contents($file, json_encode($data, JSON_PRETTY_PRINT));
+        return true;
+    } catch (Exception $e) {
+        logError("Save data failed ($file): " . $e->getMessage());
+        return false;
+    }
+}
+
+// Send message with optional keyboard
+function sendMessage($chat_id, $text, $keyboard = null, $reply_to = null) {
+    try {
+        $params = [
+            'chat_id' => $chat_id,
+            'text' => $text,
+            'parse_mode' => 'HTML'
+        ];
+        
+        if ($keyboard) {
+            $params['reply_markup'] = json_encode($keyboard);
+        }
+        
+        if ($reply_to) {
+            $params['reply_to_message_id'] = $reply_to;
+        }
+        
+        $url = API_URL . 'sendMessage?' . http_build_query($params);
+        file_get_contents($url);
+        return true;
+    } catch (Exception $e) {
+        logError("Send message failed: " . $e->getMessage());
+        return false;
+    }
+}
+
+// Get user info or create new
+function getUser($chat_id) {
+    $users = loadData(USERS_FILE);
+    
+    if (!isset($users[$chat_id])) {
+        $users[$chat_id] = [
+            'id' => $chat_id,
+            'username' => '',
+            'first_name' => '',
+            'last_name' => '',
+            'is_admin' => ($chat_id == ADMIN_ID),
+            'is_blocked' => false,
+            'created_at' => time()
+        ];
+        saveData(USERS_FILE, $users);
+    }
+    
+    return $users[$chat_id];
+}
+
+// Process incoming message
+function processMessage($message) {
+    $chat_id = $message['chat']['id'];
+    $user = getUser($chat_id);
+    $text = trim($message['text'] ?? '');
+    
+    // Update user info
+    $users = loadData(USERS_FILE);
+    $users[$chat_id]['username'] = $message['chat']['username'] ?? '';
+    $users[$chat_id]['first_name'] = $message['chat']['first_name'] ?? '';
+    $users[$chat_id]['last_name'] = $message['chat']['last_name'] ?? '';
+    saveData(USERS_FILE, $users);
+    
     // Check if user is blocked
-    if (in_array($chat_id, $users_data['blocked'])) {
-        Request::sendMessage([
-            'chat_id' => $chat_id,
-            'text'    => "🚫 You are blocked from using this bot.",
-        ]);
-        exit;
-    }
-
-    // Check maintenance mode for non-admin users
-    if ($users_data['maintenance'] && $chat_id != $admin_id) {
-        Request::sendMessage([
-            'chat_id' => $chat_id,
-            'text'    => "🔧 The bot is currently under maintenance. Please try again later.",
-        ]);
-        exit;
-    }
-
-    // Handle /start command
-    if (strpos($text, '/start') === 0) {
-        $response_text = "👋 Hello! I'm a middleman bot. Send me a message and I'll forward it to the admin.";
-        
-        if (!isset($users_data['users'][$chat_id])) {
-            $users_data['users'][$chat_id] = [
-                'username' => $message->getChat()->getUsername(),
-                'first_name' => $message->getChat()->getFirstName(),
-                'last_name' => $message->getChat()->getLastName(),
-                'chat_id' => $chat_id,
-                'joined_at' => date('Y-m-d H:i:s')
-            ];
-            file_put_contents('users.json', json_encode($users_data));
-        }
-        
-        Request::sendMessage([
-            'chat_id' => $chat_id,
-            'text'    => $response_text,
-        ]);
+    if ($user['is_blocked'] && $chat_id != ADMIN_ID) {
+        sendMessage($chat_id, "⛔ You are blocked from using this bot.");
+        return;
     }
     
-    // Handle admin commands (only if sender is admin)
-    elseif ($chat_id == $admin_id) {
-        // Maintenance commands
-        if (strpos($text, '/maintenance') === 0) {
-            $parts = explode(' ', $text);
-            if (count($parts) > 1) {
-                if ($parts[1] == 'on') {
-                    $users_data['maintenance'] = true;
-                    $response = "🛠 Maintenance mode ENABLED";
-                } elseif ($parts[1] == 'off') {
-                    $users_data['maintenance'] = false;
-                    $response = "✅ Maintenance mode DISABLED";
-                }
-                file_put_contents('users.json', json_encode($users_data));
-                Request::sendMessage([
-                    'chat_id' => $admin_id,
-                    'text'    => $response,
-                ]);
-            }
-        }
-        // Broadcast command
-        elseif (strpos($text, '/broadcast') === 0) {
-            $message_to_send = trim(substr($text, strlen('/broadcast')));
-            if (!empty($message_to_send)) {
-                $success = 0;
-                $failed = 0;
-                foreach ($users_data['users'] as $user) {
-                    if (!in_array($user['chat_id'], $users_data['blocked'])) {
-                        try {
-                            Request::sendMessage([
-                                'chat_id' => $user['chat_id'],
-                                'text'    => "📢 Broadcast:\n" . $message_to_send,
-                            ]);
-                            $success++;
-                        } catch (Exception $e) {
-                            $failed++;
-                        }
-                    }
-                }
-                Request::sendMessage([
-                    'chat_id' => $admin_id,
-                    'text'    => "📢 Broadcast sent!\nSuccess: $success\nFailed: $failed",
-                ]);
-            }
-        }
-        // Info command
-        elseif ($text == '/info') {
-            $total_users = count($users_data['users']);
-            $active_users = 0; // Would need tracking for actual active users
-            $blocked_users = count($users_data['blocked']);
-            $maintenance_status = $users_data['maintenance'] ? 'ON' : 'OFF';
-            
-            $response = "📊 Bot Statistics:\n";
-            $response .= "👥 Total users: $total_users\n";
-            $response .= "🚫 Blocked users: $blocked_users\n";
-            $response .= "🛠 Maintenance: $maintenance_status\n";
-            $response .= "📅 Last update: " . date('Y-m-d H:i:s');
-            
-            Request::sendMessage([
-                'chat_id' => $admin_id,
-                'text'    => $response,
-            ]);
-        }
-        // Block/unblock commands
-        elseif (strpos($text, '/block') === 0 || strpos($text, '/unblock') === 0) {
-            $parts = explode(' ', $text);
-            if (count($parts) > 1 && is_numeric($parts[1])) {
-                $target_id = $parts[1];
-                $action = strpos($text, '/block') === 0 ? 'block' : 'unblock';
+    // Handle commands
+    if (strpos($text, '/') === 0) {
+        $command = explode(' ', $text)[0];
+        
+        switch ($command) {
+            case '/start':
+                $welcome = "👋 Welcome to Middleman Bot!\n\n";
+                $welcome .= "This bot acts as a secure communication channel.\n";
+                $welcome .= "Your messages will be forwarded to the admin who will respond to you here.\n\n";
+                $welcome .= "Just type your message and send it!";
+                sendMessage($chat_id, $welcome);
+                break;
                 
-                if ($action == 'block') {
-                    if (!in_array($target_id, $users_data['blocked'])) {
-                        $users_data['blocked'][] = $target_id;
-                        $response = "🚫 User $target_id has been blocked.";
-                    } else {
-                        $response = "ℹ️ User $target_id is already blocked.";
-                    }
+            case '/admin':
+                if ($user['is_admin']) {
+                    $admin_help = "🛠️ Admin Commands:\n";
+                    $admin_help .= "/users - List all users\n";
+                    $admin_help .= "/block [id] - Block a user\n";
+                    $admin_help .= "/unblock [id] - Unblock a user\n";
+                    $admin_help .= "/broadcast [msg] - Send message to all users\n";
+                    $admin_help .= "/conversations - List active conversations";
+                    sendMessage($chat_id, $admin_help);
+                }
+                break;
+                
+            default:
+                if ($user['is_admin'] && strpos($text, '/reply ') === 0) {
+                    handleAdminReply($text, $chat_id);
                 } else {
-                    if (($key = array_search($target_id, $users_data['blocked'])) !== false) {
-                        unset($users_data['blocked'][$key]);
-                        $users_data['blocked'] = array_values($users_data['blocked']);
-                        $response = "✅ User $target_id has been unblocked.";
-                    } else {
-                        $response = "ℹ️ User $target_id is not blocked.";
-                    }
+                    forwardToAdmin($chat_id, $text);
                 }
-                
-                file_put_contents('users.json', json_encode($users_data));
-                Request::sendMessage([
-                    'chat_id' => $admin_id,
-                    'text'    => $response,
-                ]);
-            }
+                break;
         }
-        // Check if this is a reply to a forwarded message
-        elseif ($message->getReplyToMessage()) {
-            $reply_to = $message->getReplyToMessage();
-            $original_sender = null;
-            
-            foreach ($users_data['chats'] as $original_chat_id => $admin_chat_id) {
-                if ($admin_chat_id == $reply_to->getMessageId()) {
-                    $original_sender = $original_chat_id;
-                    break;
-                }
-            }
-            
-            if ($original_sender) {
-                Request::sendMessage([
-                    'chat_id' => $original_sender,
-                    'text'    => "💬 Admin reply:\n" . $text,
-                ]);
-                
-                Request::sendMessage([
-                    'chat_id' => $admin_id,
-                    'text'    => "✅ Your reply has been sent to the user.",
-                ]);
-            }
+    } else {
+        // Regular message - forward to appropriate party
+        if ($chat_id == ADMIN_ID) {
+            sendMessage($chat_id, "Please use /reply [user_id] [message] to respond to a user.");
+        } else {
+            forwardToAdmin($chat_id, $text);
         }
+    }
+}
+
+// Forward user message to admin
+function forwardToAdmin($user_id, $message) {
+    $users = loadData(USERS_FILE);
+    $user = $users[$user_id] ?? null;
+    
+    if (!$user) return;
+    
+    $conversations = loadData(CONVERSATIONS_FILE);
+    $conversation_id = $user_id;
+    
+    // Store message in conversation history
+    $conversations[$conversation_id][] = [
+        'from' => $user_id,
+        'message' => $message,
+        'timestamp' => time()
+    ];
+    saveData(CONVERSATIONS_FILE, $conversations);
+    
+    // Format message for admin
+    $user_info = "User: " . ($user['first_name'] ?? '') . " " . ($user['last_name'] ?? '');
+    $user_info .= " (@".($user['username'] ?? '') . ")\n";
+    $user_info .= "ID: $user_id\n\n";
+    $user_info .= "Message:\n$message\n\n";
+    $user_info .= "Reply with: /reply $user_id [your message]";
+    
+    sendMessage(ADMIN_ID, $user_info);
+    sendMessage($user_id, "✅ Your message has been forwarded to the admin. Please wait for a response.");
+}
+
+// Handle admin replies
+function handleAdminReply($text, $admin_id) {
+    $parts = explode(' ', $text, 3);
+    if (count($parts) < 3) {
+        sendMessage($admin_id, "Usage: /reply [user_id] [message]");
+        return;
     }
     
-    // Handle regular user messages
-    else {
-        if (!isset($users_data['users'][$chat_id])) {
-            $users_data['users'][$chat_id] = [
-                'username' => $message->getChat()->getUsername(),
-                'first_name' => $message->getChat()->getFirstName(),
-                'last_name' => $message->getChat()->getLastName(),
-                'chat_id' => $chat_id,
-                'joined_at' => date('Y-m-d H:i:s')
-            ];
-        }
-        
-        $user_info = $users_data['users'][$chat_id];
-        $user_str = "👤 User: " . $user_info['first_name'] . " " . ($user_info['last_name'] ?? '');
-        if (!empty($user_info['username'])) {
-            $user_str .= " (@{$user_info['username']})";
-        }
-        
-        $result = Request::sendMessage([
-            'chat_id' => $admin_id,
-            'text'    => "📩 New message from:\n{$user_str}\n\n{$text}",
-        ]);
-        
-        if ($result->isOk()) {
-            $forwarded_message_id = $result->getResult()->getMessageId();
-            $users_data['chats'][$chat_id] = $forwarded_message_id;
-            file_put_contents('users.json', json_encode($users_data));
-        }
-        
-        Request::sendMessage([
-            'chat_id' => $chat_id,
-            'text'    => "✅ Your message has been forwarded to the admin.",
-        ]);
+    $user_id = $parts[1];
+    $message = $parts[2];
+    
+    $users = loadData(USERS_FILE);
+    if (!isset($users[$user_id])) {
+        sendMessage($admin_id, "❌ User not found.");
+        return;
     }
-
-} catch (Longman\TelegramBot\Exception\TelegramException $e) {
-    file_put_contents('error.log', date('Y-m-d H:i:s') . " - " . $e->getMessage() . "\n", FILE_APPEND);
-} catch (Exception $e) {
-    file_put_contents('error.log', date('Y-m-d H:i:s') . " - " . $e->getMessage() . "\n", FILE_APPEND);
+    
+    $conversations = loadData(CONVERSATIONS_FILE);
+    $conversation_id = $user_id;
+    
+    // Store admin reply in conversation history
+    $conversations[$conversation_id][] = [
+        'from' => $admin_id,
+        'message' => $message,
+        'timestamp' => time()
+    ];
+    saveData(CONVERSATIONS_FILE, $conversations);
+    
+    // Send to user
+    sendMessage($user_id, "💌 Admin Response:\n\n$message");
+    sendMessage($admin_id, "✅ Your reply has been sent to user $user_id.");
 }
+
+// Process callback queries (for buttons)
+function processCallbackQuery($callback_query) {
+    $chat_id = $callback_query['message']['chat']['id'];
+    $data = $callback_query['data'];
+    
+    // Handle button presses if needed
+    // You can add buttons for quick replies, etc.
+}
+
+// Main update processor
+function processUpdate($update) {
+    if (isset($update['message'])) {
+        processMessage($update['message']);
+    } elseif (isset($update['callback_query'])) {
+        processCallbackQuery($update['callback_query']);
+    }
+}
+
+// Webhook handler (for Render.com)
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $content = file_get_contents("php://input");
+    $update = json_decode($content, true);
+    
+    if ($update) {
+        processUpdate($update);
+    }
+    
+    // Send 200 OK response
+    http_response_code(200);
+    exit;
+}
+
+// Polling mode (for testing)
+function runBot() {
+    $offset = 0;
+    initializeBot();
+    
+    while (true) {
+        try {
+            $updates = file_get_contents(API_URL . "getUpdates?offset=$offset&timeout=30");
+            $updates = json_decode($updates, true);
+            
+            if ($updates['ok'] && !empty($updates['result'])) {
+                foreach ($updates['result'] as $update) {
+                    $offset = $update['update_id'] + 1;
+                    processUpdate($update);
+                }
+            }
+            
+            usleep(100000);
+        } catch (Exception $e) {
+            logError("Polling error: " . $e->getMessage());
+            sleep(1);
+        }
+    }
+}
+
+// Uncomment for polling mode (not needed for webhook)
+// runBot();
+?>
