@@ -1,34 +1,26 @@
+# Use official PHP image with Apache
 FROM php:8.1-apache
 
-WORKDIR /var/www/html
-
-# Install system dependencies
+# Install required extensions
 RUN apt-get update && apt-get install -y \
-    git \
-    unzip \
     libzip-dev \
     zip \
-    && docker-php-ext-install pdo_mysql zip
+    && docker-php-ext-install zip
 
-# Install Composer
-RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+# Enable Apache rewrite module
+RUN a2enmod rewrite
 
-# Create and set permissions for required files
-RUN touch users.json error.log && \
-    chmod 666 users.json && \
-    chmod 666 error.log
+# Copy application files
+COPY . /var/www/html/
 
-# Copy only necessary files for composer first
-COPY composer.json composer.lock ./
+# Set permissions for data files
+RUN mkdir -p /var/www/html/data && \
+    touch /var/www/html/data/users.json && \
+    touch /var/www/html/data/error.log && \
+    chown -R www-data:www-data /var/www/html/data
 
-# Install dependencies (with no-dev for production)
-RUN composer install --no-dev --no-interaction --optimize-autoloader
+# Set working directory
+WORKDIR /var/www/html
 
-# Copy the rest of the application
-COPY . .
-
-# Set proper permissions
-RUN chown -R www-data:www-data /var/www/html && \
-    chmod -R 755 /var/www/html
-
+# Expose port 80
 EXPOSE 80
