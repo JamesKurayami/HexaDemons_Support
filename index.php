@@ -1,7 +1,7 @@
 <?php
 // Bot configuration
-define('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE');
-define('ADMIN_ID', 'YOUR_TELEGRAM_USER_ID');
+define('BOT_TOKEN', '8149005317:AAFTCtpaPKlUkpmcyhmIWQHVAbRxwn8dJWg');
+define('ADMIN_ID', '1310095655');
 define('API_URL', 'https://api.telegram.org/bot' . BOT_TOKEN . '/');
 define('DATA_DIR', __DIR__ . '/data/');
 define('USERS_FILE', DATA_DIR . 'users.json');
