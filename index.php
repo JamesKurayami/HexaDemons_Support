@@ -168,7 +168,7 @@ function processMessage($message) {
         
         switch ($command) {
             case '/start':
-                $welcome = "👋 Welcome to HexaDemons Support!\n\n";
+                $welcome = "Welcome to HexaDemons Support!\n\n";
                 $welcome .= "This bot acts as a secure communication channel.\n";
                 $welcome .= "Just type your message and it will be forwarded to the admin.\n";
                 sendMessage($chat_id, $welcome);
