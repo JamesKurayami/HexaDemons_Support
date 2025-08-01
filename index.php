@@ -79,6 +79,23 @@ function sendMessage($chat_id, $text, $keyboard = null, $reply_to = null) {
     }
 }
 
+// Get admin keyboard
+function getAdminKeyboard() {
+    return [
+        [
+            ['text' => '👥 Active Users', 'callback_data' => 'admin_users'],
+            ['text' => '📊 Stats', 'callback_data' => 'admin_stats']
+        ],
+        [
+            ['text' => '🚫 Block User', 'callback_data' => 'admin_block'],
+            ['text' => '✅ Unblock User', 'callback_data' => 'admin_unblock']
+        ],
+        [
+            ['text' => '📢 Broadcast', 'callback_data' => 'admin_broadcast']
+        ]
+    ];
+}
+
 // Get user info or create new
 function getUser($chat_id) {
     $users = loadData(USERS_FILE);
@@ -124,22 +141,16 @@ function processMessage($message) {
         
         switch ($command) {
             case '/start':
-                $welcome = "👋 Welcome to Middleman Bot!\n\n";
+                $welcome = " Welcome to HexaDemons Support!\n\n";
                 $welcome .= "This bot acts as a secure communication channel.\n";
-                $welcome .= "Your messages will be forwarded to the admin who will respond to you here.\n\n";
-                $welcome .= "Just type your message and send it!";
+                $welcome .= "Just type your message and it will be sended to the admin.\n";
+                $welcome .= "You'll receive responses here.";
                 sendMessage($chat_id, $welcome);
                 break;
                 
             case '/admin':
                 if ($user['is_admin']) {
-                    $admin_help = "🛠️ Admin Commands:\n";
-                    $admin_help .= "/users - List all users\n";
-                    $admin_help .= "/block [id] - Block a user\n";
-                    $admin_help .= "/unblock [id] - Unblock a user\n";
-                    $admin_help .= "/broadcast [msg] - Send message to all users\n";
-                    $admin_help .= "/conversations - List active conversations";
-                    sendMessage($chat_id, $admin_help);
+                    sendMessage($chat_id, "🛠️ Admin Panel", getAdminKeyboard());
                 }
                 break;
                 
@@ -187,10 +198,10 @@ function forwardToAdmin($user_id, $message) {
     $user_info .= "Reply with: /reply $user_id [your message]";
     
     sendMessage(ADMIN_ID, $user_info);
-    sendMessage($user_id, "✅ Your message has been forwarded to the admin. Please wait for a response.");
+    sendMessage($user_id, "💌 Your message has been forwarded to the admin.\n\nAdmin will respond to you as soon as possible.");
 }
 
-// Handle admin replies
+// Handle admin replies - MODIFIED VERSION
 function handleAdminReply($text, $admin_id) {
     $parts = explode(' ', $text, 3);
     if (count($parts) < 3) {
@@ -218,18 +229,59 @@ function handleAdminReply($text, $admin_id) {
     ];
     saveData(CONVERSATIONS_FILE, $conversations);
     
-    // Send to user
-    sendMessage($user_id, "💌 Admin Response:\n\n$message");
-    sendMessage($admin_id, "✅ Your reply has been sent to user $user_id.");
+    // Send to user - SIMPLIFIED OUTPUT
+    sendMessage($user_id, $message); // Just the raw message
+    sendMessage($admin_id, "💌 Your reply has been sent to user $user_id.");
 }
 
-// Process callback queries (for buttons)
+// Process callback queries (for admin buttons)
 function processCallbackQuery($callback_query) {
     $chat_id = $callback_query['message']['chat']['id'];
     $data = $callback_query['data'];
+    $message_id = $callback_query['message']['message_id'];
     
-    // Handle button presses if needed
-    // You can add buttons for quick replies, etc.
+    $user = getUser($chat_id);
+    if (!$user['is_admin']) {
+        sendMessage($chat_id, "⛔ Admin access required.");
+        return;
+    }
+    
+    switch ($data) {
+        case 'admin_users':
+            $users = loadData(USERS_FILE);
+            $active_users = array_filter($users, fn($u) => !$u['is_blocked'] && $u['id'] != ADMIN_ID);
+            $response = "👥 Active Users: " . count($active_users) . "\n\n";
+            foreach ($active_users as $id => $user) {
+                $response .= "🆔 $id | 👤 " . ($user['first_name'] ?? '') . " @" . ($user['username'] ?? '') . "\n";
+            }
+            sendMessage($chat_id, $response);
+            break;
+            
+        case 'admin_block':
+            sendMessage($chat_id, "Send the user ID to block (e.g., 'block 12345')");
+            break;
+            
+        case 'admin_unblock':
+            sendMessage($chat_id, "Send the user ID to unblock (e.g., 'unblock 12345')");
+            break;
+            
+        case 'admin_broadcast':
+            sendMessage($chat_id, "Type your broadcast message (it will be sent to all users):");
+            break;
+            
+        case 'admin_stats':
+            $users = loadData(USERS_FILE);
+            $conversations = loadData(CONVERSATIONS_FILE);
+            $stats = "📊 Bot Statistics\n\n";
+            $stats .= "👥 Total Users: " . count($users) . "\n";
+            $stats .= "📩 Active Conversations: " . count($conversations) . "\n";
+            $stats .= "⛔ Blocked Users: " . count(array_filter($users, fn($u) => $u['is_blocked'])) . "\n";
+            sendMessage($chat_id, $stats);
+            break;
+            
+        default:
+            sendMessage($chat_id, "Unknown command: $data");
+    }
 }
 
 // Main update processor
