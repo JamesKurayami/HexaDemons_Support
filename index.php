@@ -86,8 +86,8 @@ function sendMessage($chat_id, $text, $keyboard = null, $reply_to = null) {
         }
         
         $url = API_URL . 'sendMessage?' . http_build_query($params);
-        file_get_contents($url);
-        return true;
+        $response = file_get_contents($url);
+        return json_decode($response, true);
     } catch (Exception $e) {
         logError("Send message failed: " . $e->getMessage());
         return false;
@@ -128,6 +128,10 @@ function getAdminKeyboard() {
             ],
             [
                 ['text' => "🔧 Maintenance ($maintenance_status)", 'callback_data' => 'admin_maintenance']
+            ],
+            [
+                ['text' => '🗑️ Delete My Messages', 'callback_data' => 'admin_delete_bot'],
+                ['text' => '🧹 Delete All Messages', 'callback_data' => 'admin_delete_all']
             ]
         ]
     ];
@@ -146,7 +150,8 @@ function getUser($chat_id) {
             'is_admin' => ($chat_id == ADMIN_ID),
             'is_blocked' => false,
             'created_at' => time(),
-            'pending_messages' => []
+            'bot_messages' => [],
+            'user_messages' => []
         ];
         saveData(USERS_FILE, $users);
     }
@@ -191,7 +196,12 @@ function processMessage($message) {
     
     // Check maintenance mode
     if (isMaintenanceMode() && $chat_id != ADMIN_ID) {
-        sendMessage($chat_id, "🔧 Bot is currently under maintenance. Please try again later.");
+        $response = sendMessage($chat_id, "🔧 Bot is currently under maintenance. Please try again later.");
+        if ($response && isset($response['result']['message_id'])) {
+            $users = loadData(USERS_FILE);
+            $users[$chat_id]['bot_messages'][] = $response['result']['message_id'];
+            saveData(USERS_FILE, $users);
+        }
         return;
     }
     
@@ -204,7 +214,11 @@ function processMessage($message) {
     
     // Check if user is blocked
     if ($user['is_blocked'] && $chat_id != ADMIN_ID) {
-        sendMessage($chat_id, "⛔ You are blocked from using this bot.");
+        $response = sendMessage($chat_id, "⛔ You are blocked from using this bot.");
+        if ($response && isset($response['result']['message_id'])) {
+            $users[$chat_id]['bot_messages'][] = $response['result']['message_id'];
+            saveData(USERS_FILE, $users);
+        }
         return;
     }
     
@@ -214,15 +228,23 @@ function processMessage($message) {
         
         switch ($command) {
             case '/start':
-                $welcome = "Welcome to HexaDemons Support!\n\n";
+                $welcome = "👋 Welcome to HexaDemons Support!\n\n";
                 $welcome .= "This bot acts as a secure communication channel.\n";
                 $welcome .= "Just type your message and it will be forwarded to the admin.\n";
-                sendMessage($chat_id, $welcome);
+                $response = sendMessage($chat_id, $welcome);
+                if ($response && isset($response['result']['message_id'])) {
+                    $users[$chat_id]['bot_messages'][] = $response['result']['message_id'];
+                    saveData(USERS_FILE, $users);
+                }
                 break;
                 
             case '/admin':
                 if ($user['is_admin']) {
-                    sendMessage($chat_id, "🛠️ Admin Panel", getAdminKeyboard());
+                    $response = sendMessage($chat_id, "🛠️ Admin Panel", getAdminKeyboard());
+                    if ($response && isset($response['result']['message_id'])) {
+                        $users[$chat_id]['bot_messages'][] = $response['result']['message_id'];
+                        saveData(USERS_FILE, $users);
+                    }
                 }
                 break;
                 
@@ -260,7 +282,11 @@ function processMessage($message) {
     } else {
         // Regular message
         if ($chat_id == ADMIN_ID) {
-            sendMessage($chat_id, "Please use /reply [user_id] [message] to respond to a user.");
+            $response = sendMessage($chat_id, "Please use /reply [user_id] [message] to respond to a user.");
+            if ($response && isset($response['result']['message_id'])) {
+                $users[$chat_id]['bot_messages'][] = $response['result']['message_id'];
+                saveData(USERS_FILE, $users);
+            }
         } else {
             forwardToAdmin($chat_id, $text, $message_id);
         }
@@ -281,13 +307,14 @@ function forwardToAdmin($user_id, $message, $user_message_id = null) {
     $conversations[$conversation_id][] = [
         'from' => $user_id,
         'message' => $message,
-        'timestamp' => time()
+        'timestamp' => time(),
+        'message_id' => $user_message_id
     ];
     saveData(CONVERSATIONS_FILE, $conversations);
     
-    // Store message ID for later deletion
+    // Store user message ID
     if ($user_message_id) {
-        $users[$user_id]['pending_messages'][] = $user_message_id;
+        $users[$user_id]['user_messages'][] = $user_message_id;
         saveData(USERS_FILE, $users);
     }
     
@@ -303,7 +330,7 @@ function forwardToAdmin($user_id, $message, $user_message_id = null) {
     
     // Store confirmation message ID
     if ($confirmation && isset($confirmation['result']['message_id'])) {
-        $users[$user_id]['pending_messages'][] = $confirmation['result']['message_id'];
+        $users[$user_id]['bot_messages'][] = $confirmation['result']['message_id'];
         saveData(USERS_FILE, $users);
     }
 }
@@ -336,18 +363,72 @@ function handleAdminReply($text, $admin_id) {
     ];
     saveData(CONVERSATIONS_FILE, $conversations);
     
-    // Delete user's pending messages
-    if (!empty($users[$user_id]['pending_messages'])) {
-        foreach ($users[$user_id]['pending_messages'] as $msg_id) {
+    // Delete bot's confirmation message
+    if (!empty($users[$user_id]['bot_messages'])) {
+        foreach ($users[$user_id]['bot_messages'] as $msg_id) {
             deleteMessage($user_id, $msg_id);
         }
-        $users[$user_id]['pending_messages'] = [];
-        saveData(USERS_FILE, $users);
+        $users[$user_id]['bot_messages'] = [];
     }
     
-    // Send to user
-    sendMessage($user_id, $message);
+    // Send reply to user
+    $response = sendMessage($user_id, $message);
+    if ($response && isset($response['result']['message_id'])) {
+        $users[$user_id]['bot_messages'][] = $response['result']['message_id'];
+    }
+    
+    saveData(USERS_FILE, $users);
     sendMessage($admin_id, "✅ Reply sent to user $user_id");
+}
+
+// Delete all bot messages for a user
+function deleteBotMessages($user_id) {
+    $users = loadData(USERS_FILE);
+    if (!isset($users[$user_id])) return false;
+    
+    $deleted = 0;
+    if (!empty($users[$user_id]['bot_messages'])) {
+        foreach ($users[$user_id]['bot_messages'] as $msg_id) {
+            if (deleteMessage($user_id, $msg_id)) {
+                $deleted++;
+            }
+        }
+        $users[$user_id]['bot_messages'] = [];
+        saveData(USERS_FILE, $users);
+    }
+    return $deleted;
+}
+
+// Delete all messages for a user (both bot and user messages)
+function deleteAllMessages($user_id) {
+    $users = loadData(USERS_FILE);
+    if (!isset($users[$user_id])) return false;
+    
+    $deleted = 0;
+    
+    // Delete bot messages
+    if (!empty($users[$user_id]['bot_messages'])) {
+        foreach ($users[$user_id]['bot_messages'] as $msg_id) {
+            if (deleteMessage($user_id, $msg_id)) {
+                $deleted++;
+            }
+        }
+    }
+    
+    // Delete user messages
+    if (!empty($users[$user_id]['user_messages'])) {
+        foreach ($users[$user_id]['user_messages'] as $msg_id) {
+            if (deleteMessage($user_id, $msg_id)) {
+                $deleted++;
+            }
+        }
+    }
+    
+    $users[$user_id]['bot_messages'] = [];
+    $users[$user_id]['user_messages'] = [];
+    saveData(USERS_FILE, $users);
+    
+    return $deleted;
 }
 
 // Process callback queries (for admin buttons)
@@ -379,6 +460,8 @@ function processCallbackQuery($callback_query) {
             $response = "🚫 Blocked Users: " . count($blocked_users) . "\n\n";
             foreach ($blocked_users as $id => $user) {
                 $response .= "🆔 $id | 👤 " . ($user['first_name'] ?? '') . " @" . ($user['username'] ?? '') . "\n";
+                $response .= "🗑️ /delete_bot_$id - Delete bot messages\n";
+                $response .= "🧹 /delete_all_$id - Delete all messages\n\n";
             }
             sendMessage($chat_id, $response);
             break;
@@ -414,8 +497,27 @@ function processCallbackQuery($callback_query) {
             sendMessage($chat_id, "Maintenance mode is now $status_text", getAdminKeyboard());
             break;
             
+        case 'admin_delete_bot':
+            sendMessage($chat_id, "Select a user from blocked users list to delete bot messages");
+            break;
+            
+        case 'admin_delete_all':
+            sendMessage($chat_id, "Select a user from blocked users list to delete all messages");
+            break;
+            
         default:
-            sendMessage($chat_id, "Unknown command: $data");
+            if (strpos($data, 'delete_bot_') === 0) {
+                $user_id = substr($data, strlen('delete_bot_'));
+                $deleted = deleteBotMessages($user_id);
+                sendMessage($chat_id, "✅ Deleted $deleted bot messages for user $user_id");
+            } elseif (strpos($data, 'delete_all_') === 0) {
+                $user_id = substr($data, strlen('delete_all_'));
+                $deleted = deleteAllMessages($user_id);
+                sendMessage($chat_id, "✅ Deleted $deleted messages for user $user_id");
+            } else {
+                sendMessage($chat_id, "Unknown command: $data");
+            }
+            break;
     }
 }
 
